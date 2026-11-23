@@ -1,4 +1,4 @@
-// fat.c : read-only FAT32 + .sms loader of the menu. Also built with gcc for
+// fat.c : FAT32: directories, .sms loader and save files of the menu. Also built with gcc for
 // the host test (HOST).
 #include "fat.h"
 
@@ -19,8 +19,10 @@ static page_t pages[PAGES];
 static u32 pg_dir;
 static u16 pg_known;
 u16 list_page;
-static u32 fat_lba, data_lba, root_cl, part_lba;
-static u8 spc;
+static u32 fat_lba, data_lba, root_cl, part_lba, fat_len, max_cl;
+static u16 fsinfo;
+static u8 spc, nfats, mirror;
+u32 fat_serial;
 
 #ifdef HOST
 static u16 rd16(u16 o) { return buf[o] | (buf[o + 1] << 8); }
@@ -56,8 +58,16 @@ u8 fat_mount(void) {
   }
   spc = buf[13];
   fat_lba = part_lba + rd16(14);
-  data_lba = fat_lba + rd32(36) * buf[16];
+  nfats = buf[16];
+  fat_len = rd32(36);
+  data_lba = fat_lba + fat_len * nfats;
   root_cl = rd32(44);
+  fsinfo = rd16(48);
+  mirror = !(buf[40] & 0x80);
+  fat_serial = rd32(67);
+  // clusters 2 .. max_cl - 1, as many as the volume and the FAT hold
+  max_cl = (rd32(32) - (data_lba - part_lba)) / spc + 2;
+  if (max_cl > (fat_len << 7)) max_cl = fat_len << 7;
   fat_err = 0;
   return 1;
 }
@@ -159,6 +169,7 @@ restart:
       e = &list[list_len];
       ++list_len;
       e->isdir = isdir;
+      for (i = 0; i < 8; ++i) e->sn[i] = p[i];
       e->cl = ((u32)rd16(o + 20) << 16) | rd16(o + 26);
       e->size = ((u32)rd16(o + 30) << 16) | rd16(o + 28);
       if (lfn_ok) {
@@ -215,4 +226,151 @@ u8 fat_load(u32 cl, u32 size) {
 eof:
   if (!fat_err) fat_err = E_SIZE;
   return 0;
+}
+
+// --- save files -----------------------------------------------------------------
+static u32 fnd_cl, fnd_size;               // the file found, or
+static u32 slot_lba;                       // a free directory entry (0 = none)
+static u16 slot_off;
+
+// 1 = found, 0 = not found (or fat_err)
+static u8 find_sav(u32 dir, const char *sn) {
+  u16 o;
+  u8 i, *p;
+  fat_err = 0;
+  slot_lba = 0;
+  seek0(dir);
+  for (;;) {
+    if (!sector(cur_lba)) return 0;
+    for (o = 0; o < 512; o += 32) {
+      p = buf + o;
+      if (p[0] == 0 || p[0] == 0xE5) {
+        if (!slot_lba) { slot_lba = cur_lba; slot_off = o; }
+        if (p[0] == 0) return 0;
+        continue;
+      }
+      if (p[11] & 0x18) continue;          // long name, label, directory
+      for (i = 0; i < 8 && p[i] == (u8)sn[i]; ++i) ;
+      if (i < 8 || p[8] != 'S' || p[9] != 'A' || p[10] != 'V') continue;
+      fnd_cl = ((u32)rd16(o + 20) << 16) | rd16(o + 26);
+      fnd_size = ((u32)rd16(o + 30) << 16) | rd16(o + 28);
+      return 1;
+    }
+    if (!advance()) return 0;
+  }
+}
+
+static u8 sav_sectors(void) {
+  if (fnd_cl < 2) return 0;
+  if (fnd_size >= 32768UL) return SAV_SECTORS;
+  return (u8)(fnd_size >> 9);
+}
+
+u8 fat_load_sav(u32 dir, const char *sn) {
+  u8 k, n;
+  if (!find_sav(dir, sn)) return !fat_err;
+  n = sav_sectors();
+  if (!n) return 1;
+  seek0(fnd_cl);
+  for (k = 0; ; ) {
+    if (!sd_dma(cur_lba, 1, (u32)k << 9)) { fat_err = E_READ; return 0; }
+    if (++k == n) return 1;
+    if (!advance()) return !fat_err;
+  }
+}
+
+static u8 wr_buf(u32 lba) {
+  buf_lba = 0xFFFFFFFFUL;
+  if (!sd_write(lba)) { fat_err = E_READ; return 0; }
+  return 1;
+}
+
+static void put32(u16 o, u32 v) {
+  buf[o] = (u8)v; buf[o + 1] = (u8)(v >> 8); buf[o + 2] = (u8)(v >> 16); buf[o + 3] = (u8)(v >> 24);
+}
+
+static u32 newcl[SAV_SECTORS];
+
+// cluster chain newcl[0..n-1], written from its end
+static u8 write_chain(u8 n) {
+  u8 i, f;
+  u16 o;
+  u32 s, v;
+  i = n;
+  while (i) {
+    s = newcl[i - 1] >> 7;
+    if (!sector(fat_lba + s)) return 0;
+    while (i && (newcl[i - 1] >> 7) == s) {
+      --i;
+      o = ((u16)newcl[i] & 127) << 2;
+      if (rd32(o) & 0x0FFFFFFFUL) { fat_err = E_FULL; return 0; }  // not free?!
+      v = i + 1 < n ? newcl[i + 1] : 0x0FFFFFFFUL;
+      put32(o, v | (rd32(o) & 0xF0000000UL));
+    }
+    for (f = 0; f < nfats; ++f) if (!wr_buf(fat_lba + fat_len * f + s)) return 0;
+  }
+  return 1;
+}
+
+static u8 find_free(u8 n) {
+  u32 cl, left;
+  u8 k = 0;
+  cl = 2;
+  if (fsinfo && sector(part_lba + fsinfo) && rd32(0) == 0x41615252UL && rd32(484) == 0x61417272UL) {
+    cl = rd32(492);
+    if (cl < 2 || cl >= max_cl) cl = 2;
+  }
+  for (left = max_cl - 2; left; --left) {
+    if (!sector(fat_lba + (cl >> 7))) return 0;
+    if ((rd32(((u16)cl & 127) << 2) & 0x0FFFFFFFUL) == 0) {
+      newcl[k] = cl;
+      if (++k == n) return 1;
+    }
+    if (++cl == max_cl) cl = 2;
+  }
+  fat_err = E_FULL;
+  return 0;
+}
+
+u8 fat_save(u32 dir, const char *sn) {
+  u8 k, n, i;
+  u16 o;
+  if (find_sav(dir, sn)) {
+    n = sav_sectors();
+    if (!n) { fat_err = E_SIZE; return 0; }
+    seek0(fnd_cl);
+    for (k = 0; ; ) {
+      cram_read(k);
+      if (!wr_buf(cur_lba)) return 0;
+      if (++k == n) return 1;
+      if (!advance()) { if (!fat_err) fat_err = E_SIZE; return 0; }
+    }
+  }
+  if (fat_err) return 0;
+  if (!slot_lba || !mirror) { fat_err = E_DIR; return 0; }
+  n = spc >= SAV_SECTORS ? 1 : SAV_SECTORS / spc;
+  if (!find_free(n)) return 0;
+  // data, FAT, directory entry: a power cut only loses free clusters
+  for (k = 0; k < SAV_SECTORS; ++k) {
+    cram_read(k);
+    i = k / spc;
+    if (!wr_buf(data_lba + (newcl[i] - 2) * spc + (u8)(k - i * spc))) return 0;
+  }
+  if (!write_chain(n)) return 0;
+  if (fsinfo && sector(part_lba + fsinfo) && rd32(0) == 0x41615252UL && rd32(484) == 0x61417272UL) {
+    put32(488, 0xFFFFFFFFUL);              // free count: unknown
+    if (!wr_buf(part_lba + fsinfo)) return 0;
+  }
+  if (!sector(slot_lba)) return 0;
+  o = slot_off;
+  if (buf[o] == 0 && o < 480) buf[o + 32] = 0;
+  for (i = 0; i < 32; ++i) buf[o + i] = 0;
+  for (i = 0; i < 8; ++i) buf[o + i] = sn[i];
+  buf[o + 8] = 'S'; buf[o + 9] = 'A'; buf[o + 10] = 'V';
+  buf[o + 11] = 0x20;
+  buf[o + 16] = buf[o + 18] = buf[o + 24] = 0x21; // 1980-01-01
+  buf[o + 20] = (u8)(newcl[0] >> 16); buf[o + 21] = (u8)(newcl[0] >> 24);
+  buf[o + 26] = (u8)newcl[0]; buf[o + 27] = (u8)(newcl[0] >> 8);
+  put32(o + 28, 32768UL);
+  return wr_buf(slot_lba);
 }

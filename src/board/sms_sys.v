@@ -10,12 +10,13 @@
 // Menu mode (power-on or S2): $0000-$3FFF is the menu ROM, $4000-$BFFF the
 // cart through the mapper (always Sega), and cart ROM is writable. Ports:
 //   $10 W send SPI byte            R last byte received
-//   $11 W bit 0 CS (1 = high), bit 1 fast clock     R bit 7 SPI / DMA busy
+//   $11 W bit 0 CS (1 = high), bit 1 fast clock     R bit 7 SPI / DMA busy,
+//                                    bit 0 the game wrote the cart RAM
 //   $12/13/14 W PSRAM byte address, low / mid / high
 //   $15 W 0/1: copy 512 SPI bytes to that PSRAM die; the address increments
 //   $16 W mapper: 0 Sega, 1 Codemasters, 2 Sega + Korean ($A000), 3 none
 //   $17 W bank mask (16 KB banks - 1)    R last byte, and sends FF (for INIR)
-//   $18 W leave the menu: reset and run the game
+//   $18 W leave the menu: reset and run the game     $19 W clear that bit 0
 module sms_sys(
   input             clk,
   input             reset_in,
@@ -98,7 +99,7 @@ module sms_sys(
   wire       mrom_cs = menu && a[15:14] == 2'b00;
   wire       cram_cs = a[15:14] == 2'b10 && cram_en;
   wire       cart_cs = !ram_cs && !mrom_cs;
-  wire [21:0] ca0 = {bank & mask, a[13:0]};
+  wire [21:0] ca0 = {menu ? bank : bank & mask, a[13:0]};
   wire [21:0] ca1 = {7'd0, cram_bk, a[13:0]};
 
   // --- PSRAM requests ---------------------------------------------------------
@@ -139,17 +140,19 @@ module sms_sys(
 
   // --- cart registers ---------------------------------------------------------
   wire       creg = menu && a[7:4] == 4'h1;
-  reg        cs, fast, spi_go, dma;
+  reg        cs, fast, spi_go, dma, dirty;
   reg  [7:0] spi_tx;
   reg  [9:0] dcnt;
   wire       spi_busy, spi_done;
   wire [7:0] spi_rx;
   assign sd_cs = cs;
   assign sd_active = dma;
-  initial begin cs = 1; fast = 0; spi_go = 0; dma = 0; dma_wr = 0; end
+  initial begin dirty = 0; cs = 1; fast = 0; spi_go = 0; dma = 0; dma_wr = 0; end
   always @(posedge clk) begin
     spi_go <= 0; launch <= 0; dma_wr <= 0;
     if (dma_wr) dma_a <= dma_a + 1'b1;
+    if (mem_w && cram_cs && !menu) dirty <= 1;
+    if (io_w && creg && a[3:0] == 9) dirty <= 0;
     if (reset) begin
       cs <= 1; fast <= 0; dma <= 0;
     end else begin
@@ -199,7 +202,7 @@ module sms_sys(
 
   reg [7:0] q_io;
   always @(posedge clk) if (io_r && creg)
-    q_io <= a[3:0] == 1 ? {spi_busy | spi_go | dma, 7'd0} : spi_rx;
+    q_io <= a[3:0] == 1 ? {spi_busy | spi_go | dma, 6'd0, dirty} : spi_rx;
   else if (io_r) case ({ios, a[0]})
     3'b010:  q_io <= vcount;
     3'b011:  q_io <= hlatch;

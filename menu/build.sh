@@ -7,7 +7,7 @@ cp crt0.s $O/crt0.s; (cd $O; sdasz80 -o crt0.rel crt0.s)
 for f in menu.c fat.c $O/font.c; do
   sdcc -mz80 --std-c11 --opt-code-size --max-allocs-per-node 20000 -c -o $O/$(basename $f .c).rel $f
 done
-sdcc -mz80 --no-std-crt0 --code-loc 0x0070 --data-loc 0xD280 -o $O/menu.ihx $O/crt0.rel $O/menu.rel $O/fat.rel $O/font.rel
+sdcc -mz80 --no-std-crt0 --code-loc 0x0070 --data-loc 0xD300 -o $O/menu.ihx $O/crt0.rel $O/menu.rel $O/fat.rel $O/font.rel
 python - "$O" <<'E'
 import sys
 O = sys.argv[1]; m = bytearray(b'\xff' * 16384); end = 0

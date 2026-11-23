@@ -12,9 +12,13 @@ __sfr __at 0x14 ADR2;
 __sfr __at 0x15 DMA;
 __sfr __at 0x16 MAPPER;
 __sfr __at 0x17 MASK;
+__sfr __at 0x19 CLEAN;
 
 extern const u8 font[];
 void launch(void);              // crt0.s
+void write512(u8 *p);
+void ram_clear(void);
+u16 ram_sum(u16 s);
 void read512(u8 *p);            // crt0.s: 512 bytes from the SD card
 static u8 sdhc;
 
@@ -104,6 +108,22 @@ u8 sd_read(u32 lba) {
   return 1;
 }
 
+u8 sd_write(u32 lba) {
+  u16 n;
+  u8 r;
+  if (!sdhc) lba <<= 9;
+  if (command(24, lba, 0xFF)) { deselect(); return 0; }
+  xfer(0xFF);
+  xfer(0xFE);
+  write512(buf);
+  while (SPI_ST & 0x80) ;
+  xfer(0xFF); xfer(0xFF);
+  r = xfer(0xFF) & 0x1F;
+  for (n = 60000; n; --n) if (xfer(0xFF) == 0xFF) break;   // busy
+  deselect();
+  return n && r == 5;
+}
+
 // --- screen -------------------------------------------------------------------
 static void vblank(void) { while (!(VC & 0x80)) ; }
 static void reg(u8 n, u8 v) { VC = v; VC = n | 0x80; }
@@ -135,7 +155,7 @@ void progress(u16 k, u16 total) {
   if (k == 0) done = 0;
   while (done < n) { cell(4 + done, 14); put(' ', 8); ++done; }
 }
-static const char *const msgs[] = {"", "NO SD CARD", "SD READ ERROR", "NOT FAT32", "BAD SIZE"};
+static const char *const msgs[] = {"", "NO SD CARD", "SD READ ERROR", "NOT FAT32", "BAD SIZE", "SD FULL", "FOLDER FULL"};
 
 static u8 pad_now, pad_new;
 static void readpad(void) {                 // U D L R 1 2
@@ -187,22 +207,76 @@ static u8 header(u16 a) {
   for (i = 0; i < 8; ++i) if (CART(a + i) != h[i]) return 0;
   return 1;
 }
+// what the cart RAM belongs to: kept in the last PSRAM bank (slot 2)
+typedef struct { u16 magic; u32 serial, dir; char sn[8]; u16 sum; } info_t;
+#define INFO ((volatile info_t *)0x8000)
+#define MAGIC 0x5A53
+static void info_on(void) { CART(0xFFFC) = 0; CART(0xFFFF) = 255; }
+static u16 sum32(void) {
+  u16 s;
+  CART(0xFFFC) = 0x08;
+  s = ram_sum(0);
+  CART(0xFFFC) = 0x0C;
+  s = ram_sum(s);
+  CART(0xFFFC) = 0;
+  return s;
+}
+void cram_read(u8 k) {
+  u16 i;
+  volatile u8 *p = (volatile u8 *)(0x8000 + ((u16)(k & 31) << 9));
+  CART(0xFFFC) = (k & 32) ? 0x0C : 0x08;
+  for (i = 0; i < 512; ++i) buf[i] = p[i];
+  CART(0xFFFC) = 0;
+}
+// back from a game: write its cart RAM if it changed. 1 = done
+static u8 save_back(void) {
+  u8 i;
+  char sn[8];
+  u32 d, ser;
+  u16 sum;
+  if (!(SPI_ST & 1)) return 1;
+  info_on();
+  if (INFO->magic != MAGIC) { CLEAN = 0; return 1; }
+  ser = INFO->serial; d = INFO->dir; sum = INFO->sum;
+  for (i = 0; i < 8; ++i) sn[i] = INFO->sn[i];
+  if (sum32() == sum) { CLEAN = 0; return 1; }
+  at(4, 10, "SAVING...");
+  if (ser != fat_serial) { fat_err = E_SD; return 0; }
+  if (!fat_save(d, sn)) return 0;
+  sum = sum32();
+  info_on();
+  INFO->sum = sum;
+  CLEAN = 0;
+  return 1;
+}
+static void load_sav(const entry_t *e) {    // cart RAM = its file, or zeros
+  u8 i;
+  u16 s;
+  CART(0xFFFC) = 0x08; ram_clear();
+  CART(0xFFFC) = 0x0C; ram_clear();
+  CART(0xFFFC) = 0;
+  CLEAN = 0;
+  info_on();
+  INFO->magic = 0;
+  // without a readable file or room for the note, never write it back
+  if (!fat_load_sav(dir, e->sn) || rom_size > 0x3FC000UL) return;
+  s = sum32();
+  info_on();
+  INFO->serial = fat_serial;
+  INFO->dir = dir;
+  for (i = 0; i < 8; ++i) INFO->sn[i] = e->sn[i];
+  INFO->sum = s;
+  INFO->magic = MAGIC;
+}
 static void start(u32 size) {
   u16 banks = (u16)((size + 16383) >> 14), m = 1;
-  u8 mode, k;
-  u16 i;
+  u8 mode;
   while (m < banks) m <<= 1;
   // the cart is at $4000 (bank 1) and $8000 (bank 2, set to 0 here)
   CART(0xFFFF) = 0;
   if (banks >= 4 && CART16(0x7FE6) && (u16)(CART16(0x7FE6) + CART16(0x7FE8)) == 0) mode = 1;
   else if ((banks >= 2 && header(0x7FF0)) || header(0xBFF0) || header(0x9FF0)) mode = 0;
   else mode = banks <= 3 ? 3 : 2;
-  // clear the cart RAM
-  for (k = 0; k < 2; ++k) {
-    CART(0xFFFC) = k ? 0x0C : 0x08;
-    for (i = 0x8000; i < 0xC000; ++i) CART(i) = 0;
-  }
-  CART(0xFFFC) = 0;
   MAPPER = mode;
   MASK = (u8)(m - 1);
   launch();
@@ -254,12 +328,27 @@ static void browse(void) {
           title();
           at(4, 10, e->name);
           at(4, 12, "LOADING");
-          if (fat_load(e->cl, e->size)) start(rom_size);
+          if (fat_load(e->cl, e->size)) { load_sav(e); start(rom_size); }
           fail();
           fat_err = 0;
         }
       }
     }
+  }
+}
+
+// 1 = try again, 0 = give up
+static u8 save_fail(void) {
+  cls();
+  title();
+  at(4, 8, "GAME NOT SAVED");
+  at(4, 10, msgs[fat_err]);
+  at(4, 13, "1 RETRY   2 DISCARD");
+  for (;;) {
+    vblank();
+    readpad();
+    if (pad_new & 0x10) { cls(); title(); return 1; }
+    if (pad_new & 0x20) { CLEAN = 0; return 0; }
   }
 }
 
@@ -283,7 +372,11 @@ void main(void) {
   reg(1, 0xC0);
   for (;;) {
     fat_err = E_SD;
-    if (sd_init() && fat_mount()) browse();
+    if (sd_init() && fat_mount()) {
+      if (save_back()) browse();
+      else if (save_fail()) continue;
+      else { CLEAN = 0; browse(); }
+    } else if ((SPI_ST & 1) && save_fail()) continue;
     fail();
   }
 }

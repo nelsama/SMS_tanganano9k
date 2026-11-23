@@ -28,6 +28,37 @@ _read512::
   inir
   inir
   ret
+;; void write512(u8 *p) (hl): buffer -> SPI; 21 clocks a byte, SPI needs 6
+_write512::
+  ld bc,#0x0010
+  otir
+  otir
+  ret
+;; void ram_clear(void): 16 KB at $8000
+_ram_clear::
+  ld hl,#0x8000
+  ld de,#0x8001
+  ld bc,#0x3FFF
+  ld (hl),#0
+  ldir
+  ret
+;; u16 ram_sum(u16 s) (hl -> de): Fletcher style checksum of 16 KB at $8000
+;; e = sum of the bytes, d = sum of the sums (modulo 255, so nothing is lost)
+_ram_sum::
+  ex de,hl
+  ld hl,#0x8000
+3$:
+  ld a,(hl)
+  add a,e
+  adc a,#0
+  ld e,a
+  add a,d
+  adc a,#0
+  ld d,a
+  inc hl
+  bit 6,h
+  jr z,3$
+  ret
 ;; void launch(void): clear VRAM, CRAM and RAM and start the game
 _launch::
   ld a,#0x80

@@ -23,6 +23,8 @@ OUT=$ROOT/build/$MODE; mkdir -p "$OUT"; cd "$OUT"
     echo "set_option -use_sspi_as_gpio 1"
     echo "set_option -use_mspi_as_gpio 1"
     echo "set_option -timing_driven 1"
+    echo "set_option -place_option 1"
+    echo "set_option -route_option 1"
     echo "run all"
   else
     echo "set_option -top_module sms_sys"
@@ -36,4 +38,7 @@ grep -E 'ERROR' out.log || true
 tail -1 out.log
 if [ -f impl/pnr/sms_top.rpt.txt ]; then
   grep -E '^ +(Logic|Register|BSRAM|CLS|rPLL) ' impl/pnr/sms_top.rpt.txt || true
+fi
+if [ -f impl/pnr/sms_top_tr_content.html ] && [ "$MODE" = pnr ]; then
+  grep -A1 'Violated Endpoints' impl/pnr/sms_top_tr_content.html | sed 's/<[^>]*>/ /g' | tr -d '\n-'; echo
 fi

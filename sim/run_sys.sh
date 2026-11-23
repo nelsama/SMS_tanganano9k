@@ -8,7 +8,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd); O=$ROOT/build/sim; mkdir -p "$O"; cd "$O
 if [ "${SKIP_SYN:-0}" = 0 ]; then
   bash "$ROOT/tools/build.sh" syn
   python "$ROOT/sim/netlist2cpp.py" "$ROOT/build/syn/impl/gwsynthesis/sms_sys.vg" sms_sys netlist.h
-  g++ -O1 -I. -o sim_sys "$ROOT/sim/sim_sys.cpp"
+  g++ -O2 -I. -o sim_sys "$ROOT/sim/sim_sys.cpp"
 fi
 rm -f ./*.ppm
 ./sim_sys "$1" . "${@:2}"
