@@ -1,9 +1,9 @@
 // sms_top.v : Master System on the Sipeed Tang Nano 9K (GW1NR-LV9QN88PC6/I5).
 //   PLL sys : 27 / 5 x 16 = 86.4 MHz, + 90 degrees (PSRAM), CLKOUTD /4 = 21.6 MHz
-//   PLL hdmi: 27 x 5 = 135 MHz, CLKDIV /5 = 27 MHz pixel clock
+//   hdmi_phy: 27 x 5 = 135 MHz, CLKDIV /5 = 27 MHz pixel clock
 // Pad: joy_* pins, fire = button 1, btn2 = button 2; pin 85 = Pause.
 // S1 = reset, S2 = menu.
-// LEDs: 0 HDMI locked, 1 heartbeat, 2 any pad button, 3 menu, 4 loading.
+// LEDs: 0 SMS locked to the HDMI raster, 1 heartbeat, 2 any pad button, 3 menu, 4 loading.
 module sms_top(
   input        clk27,
   input        btn_s1_n, btn_s2_n, btn_start1, btn_credit,
@@ -21,7 +21,7 @@ module sms_top(
   output [1:0]  O_psram_reset_n,
   output [1:0]  O_psram_cs_n
 );
-  wire clk, memclk, memclk_p, clk135, clk_pix, lock_s, lock_h;
+  wire clk, memclk, memclk_p, clk_pix, lock_s;
 
   rPLL u_pll_sys(.CLKIN(clk27), .CLKOUT(memclk), .CLKOUTD(clk), .LOCK(lock_s),
     .CLKOUTP(memclk_p), .CLKOUTD3(), .RESET(1'b0), .RESET_P(1'b0), .CLKFB(1'b0),
@@ -34,19 +34,6 @@ module sms_top(
   defparam u_pll_sys.DYN_SDIV_SEL = 4;
   defparam u_pll_sys.PSDA_SEL = "0100";
 
-  rPLL u_pll_hdmi(.CLKIN(clk27), .CLKOUT(clk135), .CLKOUTD(), .LOCK(lock_h),
-    .CLKOUTP(), .CLKOUTD3(), .RESET(1'b0), .RESET_P(1'b0), .CLKFB(1'b0),
-    .FBDSEL(6'b0), .IDSEL(6'b0), .ODSEL(6'b0), .PSDA(4'b0), .DUTYDA(4'b0), .FDLY(4'b1111));
-  defparam u_pll_hdmi.FCLKIN = "27";
-  defparam u_pll_hdmi.DEVICE = "GW1NR-9C";
-  defparam u_pll_hdmi.IDIV_SEL = 0;
-  defparam u_pll_hdmi.FBDIV_SEL = 4;
-  defparam u_pll_hdmi.ODIV_SEL = 4;
-
-  CLKDIV u_div_pix(.CLKOUT(clk_pix), .HCLKIN(clk135), .RESETN(lock_h), .CALIB(1'b0));
-  defparam u_div_pix.DIV_MODE = "5";
-  defparam u_div_pix.GSREN = "false";
-
   // reset: power-on, S1, ~12 ms
   reg [1:0]  rs = 0;
   reg [18:0] por = 0;
@@ -56,9 +43,6 @@ module sms_top(
     if (!lock_s || !rs[1]) por <= 0;
     else if (reset) por <= por + 1'b1;
   end
-  reg [3:0] prst = 4'hF;
-  always @(posedge clk_pix or negedge lock_h)
-    if (!lock_h) prst <= 4'hF; else prst <= {prst[2:0], 1'b0};
 
   // pad, active low pins; opposite directions together are ignored
   reg [5:0] p0 = 0, p1 = 0;
@@ -78,7 +62,7 @@ module sms_top(
   end
 
   wire [15:0] sample;
-  wire        pix_we, frame_t, locked;
+  wire        pix_we, line_t, line_f, locked;
   wire [8:0]  pix_addr;
   wire [5:0]  pix_color;
   // S2, debounced (~3 ms)
@@ -106,20 +90,27 @@ module sms_top(
     .sd_sck(sd_sck), .sd_cmd(sd_cmd), .sd_cs(sd_cs), .sd_dat0(sd_dat0),
     .t0(t0), .t1(t1), .we0(we0), .we1(we1), .a0(a0), .a1(a1), .d0(d0), .d1(d1), .w0(w0), .w1(w1),
     .clk(clk), .reset_in(reset), .pad1(pad), .pad2(6'd0), .pause(pause), .sample(sample),
-    .pix_we(pix_we), .pix_addr(pix_addr), .pix_color(pix_color), .frame_t(frame_t));
+    .pix_we(pix_we), .pix_addr(pix_addr), .pix_color(pix_color), .frame_t(),
+    .line_t(line_t), .line_f(line_f), .locked(locked));
 
   wire [7:0] r, g, b;
   wire hs, vs, de;
-  sms2hdmi u_v2h(.clk(clk), .we(pix_we), .waddr(pix_addr), .wdata(pix_color), .frame_t(frame_t),
-    .clk_pix(clk_pix), .r(r), .g(g), .b(b), .hs(hs), .vs(vs), .de(de), .locked(locked));
+  wire [9:0] h_tx, v_tx;
+  sms2hdmi u_v2h(.clk(clk), .we(pix_we), .waddr(pix_addr), .wdata(pix_color),
+    .clk_pix(clk_pix), .line_t(line_t), .line_f(line_f), .h_tx(h_tx), .v_tx(v_tx), .r(r), .g(g), .b(b), .hs(hs), .vs(vs), .de(de));
 
-  hdmi_module u_hdmi(.vga_clk_x5(clk135), .vga_clk(clk_pix), .rst(prst[3]),
-    .vga_red_in(r), .vga_green_in(g), .vga_blue_in(b),
-    .vga_hsync_in(hs), .vga_vsync_in(vs), .vga_disp_ena_in(de),
-    .tmds_c0_p_out(tmds_d_p[0]), .tmds_c0_n_out(tmds_d_n[0]),
-    .tmds_c1_p_out(tmds_d_p[1]), .tmds_c1_n_out(tmds_d_n[1]),
-    .tmds_c2_p_out(tmds_d_p[2]), .tmds_c2_n_out(tmds_d_n[2]),
-    .tmds_ck_p_out(tmds_ck_p), .tmds_ck_n_out(tmds_ck_n));
+  // HDMI with 48 kHz audio (DVI only: FULL => false in hdmi_tx.vhd)
+  wire        audio_req;
+  wire [15:0] haudio;
+  wire [9:0]  q0, q1, q2;
+  hdmi_audio u_haud(.clk(clk), .sample(sample), .audio_req(audio_req), .audio(haudio));
+  hdmi_tx u_tx(.clk(clk_pix), .h_cnt(h_tx), .v_cnt(v_tx), .hs(hs), .vs(vs), .de(de),
+    .rgb({r, g, b}), .audio_req(audio_req), .audio(haudio), .q0(q0), .q1(q1), .q2(q2));
+  hdmi_phy u_phy(.clk_27(clk27), .clk_pixel(clk_pix), .q0(q0), .q1(q1), .q2(q2),
+    .tmds_c0_p(tmds_d_p[0]), .tmds_c0_n(tmds_d_n[0]),
+    .tmds_c1_p(tmds_d_p[1]), .tmds_c1_n(tmds_d_n[1]),
+    .tmds_c2_p(tmds_d_p[2]), .tmds_c2_n(tmds_d_n[2]),
+    .tmds_ck_p(tmds_ck_p), .tmds_ck_n(tmds_ck_n));
 
   // first-order sigma-delta DAC
   reg [15:0] smp = 0;
@@ -133,7 +124,5 @@ module sms_top(
 
   reg [23:0] beat = 0;
   always @(posedge clk) beat <= beat + 1'b1;
-  reg [1:0] lk = 0;
-  always @(posedge clk) lk <= {lk[0], locked};
-  assign led_n = ~{1'b0, sd_active, menu, |pad, beat[23], lk[1]};
+  assign led_n = ~{1'b0, sd_active, menu, |pad, beat[23], locked};
 endmodule

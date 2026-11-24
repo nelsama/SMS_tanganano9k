@@ -9,7 +9,7 @@ OUT=$ROOT/build/$MODE; mkdir -p "$OUT"; cd "$OUT"
 {
   echo "set_device GW1NR-LV9QN88PC6/I5 -device_version C"
   for f in T80_Pack T80_ALU T80_MCode T80_Reg T80 T80sed; do echo "add_file -type vhdl {$W/src/cpu/$f.vhd}"; done
-  for f in "$W"/src/sms/*.v "$W/src/board/sms_sys.v" "$W/src/board/sms2hdmi.v"; do echo "add_file -type verilog {$f}"; done
+  for f in "$W"/src/sms/*.v "$W/src/board/sms_sys.v" "$W/src/board/sms2hdmi.v" "$W/src/board/hdmi_audio.v"; do echo "add_file -type verilog {$f}"; done
   echo "set_option -verilog_std sysv2017"
   echo "set_option -include_path {$W/src/board}"
   if [ "$MODE" = pnr ]; then

@@ -1,6 +1,9 @@
 // sms_sys.v : Master System + flash-cart ("EverDrive" style) logic.
 // clk = 21.6 MHz: dot = clk/4, CPU = clk/6 = 3.6 MHz (real 3.58),
-// 228 CPU clocks per line, 60.27 frames/s (real 59.92).
+// 228 CPU clocks per line. The HDMI raster (59.94 Hz) is the master: one tick
+// every two HDMI lines (1372.8 clk), 262 per frame; the machine runs a line
+// (1368 clk) and waits (run = 0) for the next tick. CPU: 3.581 MHz on average
+// (real 3.580). The PSG and the SD port do not stop.
 //
 // Memory: work RAM 8 KB and menu ROM 16 KB in BSRAM; cart ROM in PSRAM die 0
 // (up to 4 MB), cart RAM (2 x 16 KB) in PSRAM die 1.
@@ -37,7 +40,10 @@ module sms_sys(
   output            pix_we,
   output     [8:0]  pix_addr,
   output     [5:0]  pix_color,
-  output            frame_t
+  output            frame_t,
+  input             line_t,     // HDMI: toggles at every tick
+  input             line_f,     // HDMI: the tick is the frame one
+  output            locked
 );
 `include "rom_cfg.vh"
   reg [7:0] rcnt;
@@ -52,8 +58,18 @@ module sms_sys(
 
   reg [2:0] cdiv;
   initial cdiv = 0;
-  wire ce = cdiv == 5;
-  always @(posedge clk) cdiv <= ce ? 3'd0 : cdiv + 1'b1;
+  wire       run;
+  wire       ce = cdiv == 5 && run;
+  always @(posedge clk) if (run) cdiv <= ce ? 3'd0 : cdiv + 1'b1;
+  reg [2:0]  adiv;
+  initial adiv = 0;
+  wire       psg_ce = adiv == 5;
+  always @(posedge clk) adiv <= psg_ce ? 3'd0 : adiv + 1'b1;
+  reg [3:0]  lt;
+  reg [1:0]  lf;
+  initial begin lt = 0; lf = 0; end
+  always @(posedge clk) begin lt <= {lt[2:0], line_t}; lf <= {lf[0], line_f}; end
+  wire       line_go = lt[3] != lt[2];
 
   // --- CPU --------------------------------------------------------------------
   wire        m1_n, mrd_t1, mreq_n, iorq_n, rd_n, wr_n, irq_n;
@@ -103,7 +119,7 @@ module sms_sys(
   wire [21:0] ca1 = {7'd0, cram_bk, a[13:0]};
 
   // --- PSRAM requests ---------------------------------------------------------
-  wire       rq   = mrd_t1 && cdiv == 1;               // T1 of a memory read
+  wire       rq   = mrd_t1 && cdiv == 1 && run;               // T1 of a memory read
   reg  [5:0] pdly;
   reg        psel;
   reg  [7:0] q_ps;
@@ -197,8 +213,9 @@ module sms_sys(
   end
   sms_vdp u_vdp(.clk(clk), .reset(reset), .wr(io_w && ios == 2), .rd(io_r && ios == 2), .a0(a[0]),
     .din(dout), .dout(vdp_q), .vcount(vcount), .hcount(hcount), .irq_n(irq_n),
-    .pix_we(pix_we), .pix_addr(pix_addr), .pix_color(pix_color), .frame_t(frame_t));
-  sn76489 u_psg(.clk(clk), .reset(reset), .ce(ce), .wr(io_w && ios == 1), .din(dout), .sample(sample));
+    .pix_we(pix_we), .pix_addr(pix_addr), .pix_color(pix_color), .frame_t(frame_t),
+    .line_go(line_go), .frame_go(lf[1]), .run(run), .locked(locked));
+  sn76489 u_psg(.clk(clk), .reset(reset), .ce(psg_ce), .wr(io_w && ios == 1), .din(dout), .sample(sample));
 
   reg [7:0] q_io;
   always @(posedge clk) if (io_r && creg)

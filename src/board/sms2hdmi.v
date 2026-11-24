@@ -1,31 +1,33 @@
-// sms2hdmi.v : SMS pixels -> 720x480p raster (855 x 524 at 27 MHz, 60.27 Hz).
-// One SMS line (1368 clk at 21.6 MHz) = 2 HDMI lines; the picture is
-// 256 x 2.5 = 640 pixels wide (centre pixel of every pair blended), 240 x 2
-// lines high. Two-line buffer; the raster is locked to the SMS frame.
+// sms2hdmi.v : SMS pixels -> 720x480p raster (858 x 525 at 27 MHz, 59.94 Hz).
+// One SMS line = 2 HDMI lines; the picture is 256 x 2.5 = 640 pixels wide
+// (centre pixel of every pair blended), 240 x 2 lines high. The raster is the
+// master: line_t toggles at the start of every even line (262 per frame) and
+// the SMS starts a scanline; line_f = 1 marks line 522, where output line 0
+// (VDP line 238, top border) starts. SMS line n is written during HDMI lines 2n-2 .. 2n-1 and shown in
+// 2n .. 2n+1 (2-line buffer).
+// r, g, b, hs, vs, de come 2 clk after h_tx, v_tx (as hdmi_tx needs).
 module sms2hdmi(
   input             clk,        // SMS side
   input             we,
   input      [8:0]  waddr,
   input      [5:0]  wdata,
-  input             frame_t,
   input             clk_pix,
+  output reg        line_t, line_f,
+  output reg [9:0]  h_tx, v_tx,
   output reg [7:0]  r, g, b,
-  output reg        hs, vs, de,
-  output reg        locked
+  output reg        hs, vs, de
 );
-  localparam H_TOT = 855, V_TOT = 524, X0 = 40, VLOCK = V_TOT - 2, HLOCK = 4;
+  localparam H_TOT = 858, V_TOT = 525, X0 = 40;
 
   reg [5:0] lb[0:511];
   always @(posedge clk) if (we) lb[waddr] <= wdata;
 
-  reg [9:0] h, v;
+  reg [9:0] h, v, h_d, v_d;
   reg [2:0] ph;       // phase of the 2.5x scaler, 0..4
   reg [7:0] px;
-  reg [2:0] ft;
-  initial begin h = 0; v = 0; ph = 0; px = 0; ft = 0; locked = 0; end
+  initial begin h = 0; v = 0; ph = 0; px = 0; line_t = 0; line_f = 0; end
 
   always @(posedge clk_pix) begin
-    ft <= {ft[1:0], frame_t};
     if (h == H_TOT - 1) begin
       h <= 0;
       v <= (v == V_TOT - 1) ? 10'd0 : v + 1'b1;
@@ -37,10 +39,13 @@ module sms2hdmi(
       if (ph == 1 || ph == 4) px <= px + 1'b1;
     end
 
-    if (ft[2] != ft[1]) begin
-      if (v == VLOCK && h >= HLOCK - 3 && h <= HLOCK + 3) locked <= 1;
-      else begin v <= VLOCK; h <= HLOCK; locked <= 0; end
+    if (h == 0 && !v[0] && v != 524) begin
+      line_t <= !line_t;
+      line_f <= (v == 522);
     end
+    // the picture pipeline is 4 stages long
+    h_d <= h;  h_tx <= h_d;
+    v_d <= v;  v_tx <= v_d;
   end
 
   // stage 1: address (px valid for pixel h-1)   stage 2: colour number
@@ -63,7 +68,7 @@ module sms2hdmi(
     bl1  <= ph == 2;
     de1  <= h < 720 && v < 480;
     hs1  <= !(h >= 736 && h < 798);
-    vs1  <= !(v >= 489 && v < 495);
+    vs1  <= !((v > 489 || (v == 489 && h >= 736)) && (v < 495 || (v == 495 && h < 736)));
     c2   <= lb[ra];
     {vis2, bl2, de2, hs2, vs2} <= {vis1, bl1, de1, hs1, vs1};
     rgb3 <= pal;  prev <= rgb3;

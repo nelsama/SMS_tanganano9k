@@ -82,13 +82,18 @@ int main(int argc, char **argv) {
     for (auto &e : ev) if (f >= e.a && f <= e.b) pad |= e.pad;
     set_pad1(pad & 63); set_pause(pad >> 8 & 1); set_to_menu((pad >> 9 & 1) && t - last < 1000);
     eval();
+    // raster: 27 MHz / 21.6 MHz = 5 / 4 pixels per clk
+    static long hp = 0; static unsigned lt = 0, lf = 0;
+    long p = t * 5 / 4 % (858L * 525), ln = p / 858;
+    if (ln != hp) { if (!(ln & 1) && ln != 524) { lt ^= 1; lf = ln == 522; } hp = ln; }
+    set_line_t(lt); set_line_f(lf);
     psram(0, get_t0(), get_we0(), get_a0(), get_d0()); psram(1, get_t1(), get_we1(), get_a1(), get_d1());
     set_w0(die[0].q); set_w1(die[1].q); set_sd_dat0(sd.step(get_sd_cs(), get_sd_sck(), get_sd_cmd())); eval();
     unsigned s = get_sample(); if (s < smin) smin = s; if (s > smax) smax = s;
     if (get_frame_t() != ft) {
       ft = !ft;
       if (f > 0) {
-        if (t - last != 1368L * 262) { badlen++; printf("frame %d: %ld clk\n", f, t - last); }
+        if (t - last > 360360 + 4 || t - last < 360360 - 4) { badlen++; printf("frame %d: %ld clk\n", f, t - last); }
         if (px != 61440) printf("frame %d: %ld pixels\n", f, px);
       }
       if (f >= frames - 3) printf("frame %d sample %u..%u\n", f, smin, smax);

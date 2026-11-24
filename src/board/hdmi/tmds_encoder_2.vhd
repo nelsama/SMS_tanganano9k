@@ -1,5 +1,3 @@
--- Copied unchanged from pengo_arcade (src/gowin/hdmi/tmds_encoder_2.vhd): DVI/HDMI
--- output for the Tang Nano 9K (TMDS encoders + OSER10 + ELVDS_OBUF).
 -- author: Furkan Cayci, 2018
 -- description: 8b/10b based tmds encoder
 

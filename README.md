@@ -1,7 +1,7 @@
 # Master System en Tang Nano 9K con cartucho SD
 
 Sega Master System en una Sipeed Tang Nano 9K (GW1NR-LV9QN88PC6/I5): Z80, VDP
-modo 4, PSG, HDMI 480p y un cartucho tipo EverDrive que carga juegos `.sms`
+modo 4, PSG, HDMI 480p con audio y un cartucho tipo EverDrive que carga juegos `.sms`
 desde una SD y guarda las partidas.
 
 ## Uso rápido
@@ -71,7 +71,7 @@ Botones a masa (activos en bajo, pull-up interno).
 | Botón 1 | 29 | SD DAT0 (MISO) | 39 |
 | Botón 2 | 35 | Audio L / R | 77 / 76, con filtro RC |
 
-S1, S2, HDMI y SD son los de la placa. LEDs: 0 HDMI sincronizado, 1 latido,
+S1, S2, HDMI y SD son los de la placa. LEDs: 0 consola sincronizada con el HDMI, 1 latido,
 2 algún botón, 3 menú, 4 cargando.
 
 ## Compatibilidad
@@ -81,7 +81,17 @@ S1, S2, HDMI y SD son los de la placa. LEDs: 0 HDMI sincronizado, 1 latido,
 - **RAM de cartucho**: 2 x 16 KB.
 - **Sin implementar**: modos TMS9918 (SG-1000), 224/240 líneas (algunos juegos
   de Codemasters), FM (YM2413), Game Gear, segundo mando (sin pines), PAL.
-- La máquina va a 60,27 Hz (consola NTSC: 59,92).
+- La máquina va a 59,94 Hz y la CPU a 3,581 MHz de media (consola NTSC: 59,92 Hz
+  y 3,580 MHz).
+
+## HDMI
+
+720x480p estándar (858 x 525, 59,94 Hz, 4:3) con audio de 48 kHz, mono por los
+dos canales. El audio analógico de los pines 77/76 sigue funcionando. Para un
+monitor solo DVI: `FULL => false` en `src/board/hdmi/hdmi_tx.vhd`.
+
+Imagen y sonido probados en la placa. Cómo funciona y cómo llevarlo a otros
+proyectos: [docs/09-HDMI-COMPLETO.md](docs/09-HDMI-COMPLETO.md).
 
 ## Compilar
 
@@ -95,6 +105,7 @@ menú, SDCC (`winget install SDCC.SDCC`); para pruebas y simulación, gcc de MSY
 | `bash tools/build.sh` | bitstream; al final muestra recursos y violaciones de tiempo (deben ser 0) |
 | `python menu/test_fat.py` | prueba FAT32, cargador y guardado en el PC |
 | `bash rom/build.sh` | en lugar del menú, prueba de PSRAM y mapper (`rom/boot.s`) |
+| `bash sim/hdmi/run.sh` | prueba el transmisor HDMI con un receptor (GHDL y Node) |
 | `bash sim/run_sys.sh 30` | simula el netlist 30 cuadros; imágenes en `build/sim` |
 
 `rom_cfg.vh` lleva la ruta absoluta de la ROM: ejecuta `menu/build.sh` si mueves
@@ -102,7 +113,7 @@ el proyecto. Desde el IDE (`SMS_TN9K.gprj`), pon *place_option* y *route_option*
 en 1; con los valores por defecto una compilación no cumplió los tiempos de la
 PSRAM.
 
-Uso actual: 46 % de lógica, 23 de 26 BSRAM.
+Uso actual: 51 % de lógica, 23 de 26 BSRAM.
 
 ### Simular
 
@@ -127,7 +138,10 @@ de prueba del guardado. `SKIP_SYN=1` reutiliza el netlist.
 
 - `src/board/sms_sys.v`: sistema, mapper, puertos del cartucho (documentados en su
   cabecera). Todo va con un reloj de 21,6 MHz: punto = /4, CPU = /6.
-- `src/sms/`: VDP y PSG. `src/board/sms2hdmi.v`: escalado 2,5 x 2 a 720x480p.
+- `src/sms/`: VDP y PSG. `src/board/sms2hdmi.v`: barrido y escalado 2,5 x 2.
+  El HDMI manda: cada dos líneas da un pulso y la consola corre una línea (1368 clk)
+  y espera la siguiente. El PSG y la SD no se detienen.
+- `src/board/hdmi/` y `hdmi_audio.v`: transmisor HDMI y filtro del audio.
 - `src/memory/psram_chan.vhd`: PSRAM a 86,4 MHz. ROM en el chip 0 y RAM de
   cartucho en el chip 1; la lectura empieza en T1 y no hay ciclos de espera.
 - `src/cpu/`: T80. Cambios en `T80sed.vhd` (espera de E/S, aviso de lectura en T1)
@@ -138,5 +152,5 @@ de prueba del guardado. `SKIP_SYN=1` reutiliza el netlist.
 
 ## Licencias
 
-T80: licencia de sus autores, en la cabecera de los archivos. `psram_chan.vhd`:
+`tmds_encoder_2.vhd`: Furkan Cayci. T80: licencia de sus autores, en la cabecera de los archivos. `psram_chan.vhd`:
 Apache 2.0 (`LICENSE-APACHE-2.0.txt`). No se incluyen juegos comerciales.

@@ -2,3 +2,4 @@ build/
 impl/
 *.user
 __pycache__/
+sim/hdmi/build/

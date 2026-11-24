@@ -1,5 +1,8 @@
 // sms_vdp.v : Sega Master System VDP (315-5246 style), mode 4, 192 lines, NTSC.
 //
+// The machine stops (run = 0) before every line until line_go, and before line
+// 238 until line_go with frame_go: the HDMI raster is the master. It stops at
+// hc = 0, ph = 0, so only the ph = 0 actions need to look at run (ph0).
 // clk = 4 clk per dot; 342 dots x 262 lines. hc = 0 is the dot where the V
 // counter changes; the picture is hc 24..279.
 // One 16 KB single-port VRAM, shared by the phase of the dot:
@@ -20,23 +23,37 @@ module sms_vdp(
   output            pix_we,
   output     [8:0]  pix_addr,   // {line[0], x}
   output reg [5:0]  pix_color,  // BBGGRR
-  output reg        frame_t     // toggles at the first of the 240 output lines
+  output reg        frame_t,    // toggles at the first of the 240 output lines
+  input             line_go, frame_go,
+  output            run,
+  output reg        locked      // was waiting at the frame tick
 );
   // --- counters -------------------------------------------------------------
   reg [1:0] ph;
   reg [8:0] hc, line;
   initial begin ph = 0; hc = 0; line = 0; frame_t = 0; end
   wire eol = ph == 3 && hc == 341;
+  wire at0 = ph == 0 && hc == 0;
+  reg  started;
+  initial begin started = 0; locked = 0; end
+  assign run = !at0 || started;
+  wire ph0 = ph == 0 && run;
+  always @(posedge clk) begin
+    if (reset || !at0) started <= 0;
+    else if (!started && line_go && (line != 238 || frame_go)) started <= 1;
+    if (reset) locked <= 0;
+    else if (line_go && frame_go) locked <= at0 && line == 238;
+  end
   always @(posedge clk) begin
     if (reset) begin ph <= 0; hc <= 0; line <= 0; end
     else begin
-      ph <= ph + 1'b1;
+      if (run) ph <= ph + 1'b1;
       if (ph == 3) hc <= hc == 341 ? 9'd0 : hc + 1'b1;
       if (eol) line <= line == 261 ? 9'd0 : line + 1'b1;
     end
     if (!reset && ph == 1 && hc == 0 && line == 238) frame_t <= !frame_t;
   end
-  wire       line0 = ph == 0 && hc == 0;          // start of a line
+  wire       line0 = ph0 && hc == 0;          // start of a line
   wire [8:0] x     = hc - 9'd24;
   wire       act_h = hc >= 24 && hc < 280;
   wire       act_v = line < 192;
@@ -73,9 +90,9 @@ module sms_vdp(
     f_vb = 0; f_ovr = 0; f_col = 0; f_line = 0; lcnt = 8'hFF;
   end
   always @(posedge clk) begin
-    cpu_rd_d <= ph == 0 && rd_pend;
+    cpu_rd_d <= ph0 && rd_pend;
     if (cpu_rd_d) rbuf <= vq;
-    if (ph == 0) begin rd_pend <= 0; wr_pend <= 0; end
+    if (ph0) begin rd_pend <= 0; wr_pend <= 0; end
 
     // status flags: a set wins over the clear
     if (st_rd) begin f_vb <= 0; f_ovr <= 0; f_col <= 0; f_line <= 0; end
@@ -270,7 +287,7 @@ module sms_vdp(
   reg [7:0] vram[0:16383];
   wire [13:0] va = ph == 0 ? ca : ph == 1 ? bg_a : sp_a;
   always @(posedge clk) begin
-    if (ph == 0 && wr_pend) vram[va] <= wbuf;
+    if (ph0 && wr_pend) vram[va] <= wbuf;
     else vq <= vram[va];
   end
 

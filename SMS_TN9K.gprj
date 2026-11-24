@@ -18,9 +18,11 @@
         <File path="src/board/sms_psport.v" type="file.verilog" enable="1"/>
         <File path="src/memory/psram_chan.vhd" type="file.vhdl" enable="1"/>
         <File path="src/board/sms_top.v" type="file.verilog" enable="1"/>
-        <File path="src/board/hdmi/hdmi_impl.vhd" type="file.vhdl" enable="1"/>
-        <File path="src/board/hdmi/hdmi_module.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/board/hdmi/hdmi_phy.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/board/hdmi/hdmi_tx.vhd" type="file.vhdl" enable="1"/>
         <File path="src/board/hdmi/tmds_encoder_2.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/board/hdmi/clk_27x5.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/board/hdmi_audio.v" type="file.verilog" enable="1"/>
         <File path="src/board/sms_tn9k.cst" type="file.cst" enable="1"/>
         <File path="src/board/sms_tn9k.sdc" type="file.sdc" enable="1"/>
     </FileList>
